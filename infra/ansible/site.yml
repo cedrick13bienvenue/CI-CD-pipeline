@@ -1,0 +1,164 @@
+---
+# ── Play 1: Configure Jenkins Server ──────────────────────────────────────────
+- name: Configure Jenkins CI server
+  hosts: jenkins
+  become: true
+
+  vars:
+    jenkins_plugins:
+      - git
+      - workflow-aggregator      # Pipeline plugin
+      - credentials-binding      # Credentials Binding plugin
+      - docker-workflow          # Docker Pipeline plugin
+      - ssh-agent                # SSH Agent plugin
+      - blueocean                # Blue Ocean UI (optional but useful)
+
+  tasks:
+
+    # ── Java 21 ───────────────────────────────────────────────────────────────
+    # amazon-linux-extras only has Java 11 — Jenkins LTS now requires Java 21+
+    # Amazon Corretto 21 is Amazon's own OpenJDK build, recommended for AL2
+    - name: Import Amazon Corretto GPG key
+      ansible.builtin.rpm_key:
+        key: https://yum.corretto.aws/corretto.key
+        state: present
+
+    - name: Add Amazon Corretto repository
+      ansible.builtin.get_url:
+        url: https://yum.corretto.aws/corretto.repo
+        dest: /etc/yum.repos.d/corretto.repo
+        mode: '0644'
+
+    - name: Install Java 21 via Amazon Corretto
+      ansible.builtin.command:
+        cmd: yum install -y java-21-amazon-corretto-devel
+        creates: /usr/lib/jvm/java-21-amazon-corretto
+
+    # ── Docker ────────────────────────────────────────────────────────────────
+    - name: Install Docker
+      ansible.builtin.command:
+        cmd: amazon-linux-extras install docker -y
+        creates: /usr/bin/docker
+
+    - name: Start and enable Docker service
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Add ec2-user to docker group
+      ansible.builtin.user:
+        name: ec2-user
+        groups: docker
+        append: true
+
+    # ── Jenkins ───────────────────────────────────────────────────────────────
+    - name: Add Jenkins repository
+      ansible.builtin.get_url:
+        url: https://pkg.jenkins.io/redhat-stable/jenkins.repo
+        dest: /etc/yum.repos.d/jenkins.repo
+        mode: '0644'
+
+    - name: Import Jenkins GPG key
+      ansible.builtin.rpm_key:
+        key: https://pkg.jenkins.io/redhat-stable/jenkins.io-2023.key
+        state: present
+
+    # fontconfig is required by Jenkins AWT for chart/graph rendering
+    # Amazon Linux 2 minimal images don't include it by default
+    - name: Install fontconfig (required by Jenkins AWT)
+      ansible.builtin.command:
+        cmd: yum install -y fontconfig
+        creates: /usr/bin/fc-list
+
+    - name: Install Jenkins
+      ansible.builtin.command:
+        cmd: yum install -y jenkins
+        creates: /usr/bin/jenkins
+
+    - name: Add jenkins user to docker group (allows Jenkins to run docker commands)
+      ansible.builtin.user:
+        name: jenkins
+        groups: docker
+        append: true
+
+    - name: Start and enable Jenkins service
+      ansible.builtin.service:
+        name: jenkins
+        state: started
+        enabled: true
+
+    - name: Wait for Jenkins to be ready (port 8080)
+      ansible.builtin.wait_for:
+        port: 8080
+        delay: 15
+        timeout: 120
+
+    # ── Jenkins Plugins ───────────────────────────────────────────────────────
+    # jenkins-plugin-cli is not bundled with the Jenkins RPM — download the
+    # plugin manager JAR separately and run it with Java
+    - name: Download Jenkins plugin manager JAR
+      ansible.builtin.get_url:
+        url: https://github.com/jenkinsci/plugin-installation-manager-tool/releases/download/2.12.13/jenkins-plugin-manager-2.12.13.jar
+        dest: /opt/jenkins-plugin-manager.jar
+        mode: '0644'
+
+    - name: Create Ansible tmp dir for jenkins user to suppress permission warning
+      ansible.builtin.file:
+        path: /var/lib/jenkins/.ansible/tmp
+        state: directory
+        owner: jenkins
+        group: jenkins
+        mode: '0700'
+
+    - name: Install Jenkins plugins via plugin manager JAR
+      ansible.builtin.command:
+        cmd: >
+          java -jar /opt/jenkins-plugin-manager.jar
+          --war /usr/share/java/jenkins.war
+          --plugin-download-directory /var/lib/jenkins/plugins
+          --plugins {{ jenkins_plugins | join(' ') }}
+      register: plugin_install
+      changed_when: "'Installing' in plugin_install.stdout"
+      become_user: jenkins
+
+    - name: Restart Jenkins to activate installed plugins
+      ansible.builtin.service:
+        name: jenkins
+        state: restarted
+
+    - name: Wait for Jenkins to come back up after restart
+      ansible.builtin.wait_for:
+        port: 8080
+        delay: 20
+        timeout: 120
+
+  handlers:
+    - name: Restart Jenkins
+      ansible.builtin.service:
+        name: jenkins
+        state: restarted
+
+# ── Play 2: Configure App Deploy Target ───────────────────────────────────────
+- name: Configure app deploy target
+  hosts: app
+  become: true
+
+  tasks:
+
+    - name: Install Docker
+      ansible.builtin.command:
+        cmd: amazon-linux-extras install docker -y
+        creates: /usr/bin/docker
+
+    - name: Start and enable Docker service
+      ansible.builtin.service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Add ec2-user to docker group
+      ansible.builtin.user:
+        name: ec2-user
+        groups: docker
+        append: true
