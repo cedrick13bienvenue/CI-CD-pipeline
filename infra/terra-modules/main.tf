@@ -42,6 +42,48 @@ data "aws_ami" "amazon_linux_2" {
   }
 }
 
+# ── IAM Role for Jenkins ───────────────────────────────────────────────────────
+# Allows Jenkins to call ec2:DescribeInstances so it can resolve the App EC2 IP
+# dynamically from tags — no hardcoded IPs in the Jenkinsfile
+
+resource "aws_iam_role" "jenkins" {
+  name = "${var.project_name}-jenkins-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect    = "Allow"
+      Action    = "sts:AssumeRole"
+      Principal = { Service = "ec2.amazonaws.com" }
+    }]
+  })
+
+  tags = {
+    Name    = "${var.project_name}-jenkins-role"
+    Project = var.project_name
+  }
+}
+
+resource "aws_iam_role_policy" "jenkins_ec2_describe" {
+  name = "${var.project_name}-ec2-describe-policy"
+  role = aws_iam_role.jenkins.id
+
+  policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect   = "Allow"
+      Action   = ["ec2:DescribeInstances"]
+      Resource = "*"
+    }]
+  })
+}
+
+# Instance profile — the wrapper that allows an EC2 to assume an IAM role
+resource "aws_iam_instance_profile" "jenkins" {
+  name = "${var.project_name}-jenkins-profile"
+  role = aws_iam_role.jenkins.name
+}
+
 # ── Modules ────────────────────────────────────────────────────────────────────
 
 module "vpc" {
@@ -59,15 +101,16 @@ module "security_group" {
 
 # Jenkins EC2 — t3.small + 20GB disk (Jenkins workspace needs headroom)
 module "jenkins_ec2" {
-  source            = "./modules/ec2"
-  project_name      = var.project_name
-  role              = "jenkins"
-  ami_id            = data.aws_ami.amazon_linux_2.id
-  instance_type     = var.jenkins_instance_type
-  subnet_id         = module.vpc.subnet_id
-  security_group_id = module.security_group.jenkins_sg_id
-  public_key        = file("../../keys/cicd-jenkins-key.pub")
-  disk_size         = 20
+  source               = "./modules/ec2"
+  project_name         = var.project_name
+  role                 = "jenkins"
+  ami_id               = data.aws_ami.amazon_linux_2.id
+  instance_type        = var.jenkins_instance_type
+  subnet_id            = module.vpc.subnet_id
+  security_group_id    = module.security_group.jenkins_sg_id
+  public_key           = file("../../keys/cicd-jenkins-key.pub")
+  disk_size            = 20
+  iam_instance_profile = aws_iam_instance_profile.jenkins.name
 }
 
 # App EC2 — t2.micro, just runs one Docker container

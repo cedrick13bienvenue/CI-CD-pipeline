@@ -38,3 +38,9 @@ variable "disk_size" {
   type        = number
   default     = 10
 }
+
+variable "iam_instance_profile" {
+  description = "IAM instance profile name to attach to the EC2 instance (optional)"
+  type        = string
+  default     = null
+}

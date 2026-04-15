@@ -2,25 +2,38 @@ pipeline {
     agent any
 
     environment {
-        // Docker Hub image config — update DOCKERHUB_USERNAME to your Docker Hub username
         DOCKERHUB_USERNAME = 'cedrick13bienvenue'
         IMAGE_NAME         = 'cicd-node-app'
         IMAGE_TAG          = "${BUILD_NUMBER}"
         FULL_IMAGE         = "${DOCKERHUB_USERNAME}/${IMAGE_NAME}:${IMAGE_TAG}"
-
-        // App EC2 deploy target — update when EC2 is recreated
-        APP_EC2_IP         = '3.250.63.106'
         CONTAINER_NAME     = 'cicd-node-app'
         APP_PORT           = '3000'
+        AWS_REGION         = 'eu-west-1'
     }
 
     stages {
 
         // ── Stage 1: Checkout ──────────────────────────────────────────────
-        // Jenkins clones the repo at the commit that triggered this build
+        // Clones the repo and resolves the App EC2 IP dynamically from AWS
+        // using the IAM role attached to this Jenkins EC2 — no hardcoded IPs
         stage('Checkout') {
             steps {
                 checkout scm
+                script {
+                    env.APP_EC2_IP = sh(
+                        script: """
+                            aws ec2 describe-instances \
+                                --region ${AWS_REGION} \
+                                --filters \
+                                    "Name=tag:Role,Values=app" \
+                                    "Name=instance-state-name,Values=running" \
+                                --query "Reservations[0].Instances[0].PublicIpAddress" \
+                                --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    echo "App EC2 IP resolved: ${env.APP_EC2_IP}"
+                }
             }
         }
 
