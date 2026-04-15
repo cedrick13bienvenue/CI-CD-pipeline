@@ -1,0 +1,22 @@
+# Environment variables — never commit secrets
+.env
+
+# SSH keys — never commit private keys
+keys/
+
+# Node.js
+app/node_modules/
+npm-debug.log*
+
+# Terraform
+**/.terraform/
+**/*.tfstate
+**/*.tfstate.backup
+*.tfvars
+
+# Ansible
+*.retry
+infra/ansible/inventory.ini
+
+# OS
+.DS_Store
