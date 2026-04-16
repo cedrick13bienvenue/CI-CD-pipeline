@@ -1,6 +1,11 @@
 pipeline {
     agent any
 
+    tools {
+        // Jenkins NodeJS plugin downloads and manages Node.js 18 — no system install needed
+        nodejs 'NodeJS-18'
+    }
+
     environment {
         DOCKERHUB_USERNAME = 'cedrick13bienvenue'
         IMAGE_NAME         = 'cicd-node-app'
@@ -20,7 +25,22 @@ pipeline {
             steps {
                 checkout scm
                 script {
-                    env.APP_EC2_IP = sh(
+                    // Private IP for SSH within VPC — security group rule allows
+                    // traffic from Jenkins SG only via internal VPC routing
+                    env.APP_EC2_PRIVATE_IP = sh(
+                        script: """
+                            aws ec2 describe-instances \
+                                --region ${AWS_REGION} \
+                                --filters \
+                                    "Name=tag:Role,Values=app" \
+                                    "Name=instance-state-name,Values=running" \
+                                --query "Reservations[0].Instances[0].PrivateIpAddress" \
+                                --output text
+                        """,
+                        returnStdout: true
+                    ).trim()
+                    // Public IP for the app URL shown after deploy
+                    env.APP_EC2_PUBLIC_IP = sh(
                         script: """
                             aws ec2 describe-instances \
                                 --region ${AWS_REGION} \
@@ -32,7 +52,8 @@ pipeline {
                         """,
                         returnStdout: true
                     ).trim()
-                    echo "App EC2 IP resolved: ${env.APP_EC2_IP}"
+                    echo "App EC2 private IP (SSH): ${env.APP_EC2_PRIVATE_IP}"
+                    echo "App EC2 public IP (URL):  ${env.APP_EC2_PUBLIC_IP}"
                 }
             }
         }
@@ -92,7 +113,7 @@ pipeline {
             steps {
                 sshagent(['ec2_ssh']) {
                     sh """
-                        ssh -o StrictHostKeyChecking=no ec2-user@${APP_EC2_IP} '
+                        ssh -o StrictHostKeyChecking=no ec2-user@${env.APP_EC2_PRIVATE_IP} '
                             docker pull ${FULL_IMAGE}
                             docker stop ${CONTAINER_NAME} || true
                             docker rm   ${CONTAINER_NAME} || true
@@ -114,11 +135,11 @@ pipeline {
         always {
             sh 'docker image prune -f'
             sshagent(['ec2_ssh']) {
-                sh "ssh -o StrictHostKeyChecking=no ec2-user@${APP_EC2_IP} 'docker image prune -f'"
+                sh "ssh -o StrictHostKeyChecking=no ec2-user@${env.APP_EC2_PRIVATE_IP} 'docker image prune -f'"
             }
         }
         success {
-            echo "Pipeline succeeded. App is live at http://${APP_EC2_IP}:${APP_PORT}"
+            echo "Pipeline succeeded. App is live at http://${env.APP_EC2_PUBLIC_IP}:${APP_PORT}"
         }
         failure {
             echo 'Pipeline failed. Check the stage logs above.'
