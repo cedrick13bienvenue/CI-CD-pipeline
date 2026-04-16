@@ -11,6 +11,7 @@
       - credentials-binding      # Credentials Binding plugin
       - docker-workflow          # Docker Pipeline plugin
       - ssh-agent                # SSH Agent plugin
+      - nodejs                   # NodeJS plugin — Jenkins manages Node.js runtime
       - blueocean                # Blue Ocean UI (optional but useful)
 
   tasks:
@@ -66,6 +67,11 @@
 
     # fontconfig is required by Jenkins AWT for chart/graph rendering
     # Amazon Linux 2 minimal images don't include it by default
+    - name: Install git (required by Jenkins Git plugin to clone repositories)
+      ansible.builtin.command:
+        cmd: yum install -y git
+        creates: /usr/bin/git
+
     - name: Install fontconfig (required by Jenkins AWT)
       ansible.builtin.command:
         cmd: yum install -y fontconfig
@@ -121,6 +127,43 @@
       register: plugin_install
       changed_when: "'Installing' in plugin_install.stdout"
       become_user: jenkins
+
+    # ── NodeJS Tool Auto-Config ───────────────────────────────────────────────
+    # Groovy init scripts in init.groovy.d/ run at Jenkins startup.
+    # This one registers the NodeJS-18 tool so the Jenkinsfile `tools {}` block
+    # resolves without manual UI clicks.
+    - name: Create init.groovy.d directory
+      ansible.builtin.file:
+        path: /var/lib/jenkins/init.groovy.d
+        state: directory
+        owner: jenkins
+        group: jenkins
+        mode: '0755'
+
+    - name: Drop NodeJS-16 tool init script
+      ansible.builtin.copy:
+        dest: /var/lib/jenkins/init.groovy.d/nodejs-tool.groovy
+        owner: jenkins
+        group: jenkins
+        mode: '0644'
+        content: |
+          import jenkins.model.Jenkins
+          import hudson.tools.InstallSourceProperty
+          import jenkins.plugins.nodejs.tools.NodeJSInstallation
+          import jenkins.plugins.nodejs.tools.NodeJSInstaller
+
+          def descriptor = Jenkins.instance.getDescriptorByType(NodeJSInstallation.DescriptorImpl)
+          def existing   = descriptor.installations
+
+          // Node 18 binaries require glibc 2.28; Amazon Linux 2 only ships 2.26.
+          // Node 16 LTS requires glibc 2.17 — fully compatible with AL2.
+          if (!existing.any { it.name == 'NodeJS-16' }) {
+              def installer    = new NodeJSInstaller('16.20.2', '', 72)
+              def installSrc   = new InstallSourceProperty([installer])
+              def installation = new NodeJSInstallation('NodeJS-16', '', [installSrc])
+              descriptor.installations = existing + [installation]
+              descriptor.save()
+          }
 
     - name: Restart Jenkins to activate installed plugins
       ansible.builtin.service:

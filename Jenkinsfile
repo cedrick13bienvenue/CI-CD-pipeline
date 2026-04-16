@@ -3,7 +3,9 @@ pipeline {
 
     tools {
         // Jenkins NodeJS plugin downloads and manages Node.js 18 — no system install needed
-        nodejs 'NodeJS-18'
+        // Node 16 is the latest LTS that ships glibc 2.17 binaries
+        // Node 18+ requires glibc 2.28 — Amazon Linux 2 only has 2.26
+        nodejs 'NodeJS-16'
     }
 
     environment {
